@@ -25,6 +25,14 @@
   - 每段 8 秒、hop 3 秒。
   - 当前更适合作为下一轮复现实验和分析的主入口。
 
+- `run_audio_primary_v6_murmur_aux.sh`
+  - 下一步验证实验。
+  - 在 v3 配置基础上增加 segment-level Murmur Present/Absent 辅助监督。
+
+- `run_audio_primary_v7_murmur_evidence.sh`
+  - 下一步验证实验。
+  - 在 v6 基础上加入患者级 Murmur evidence aggregation。
+
 - `run_audio_only_baseline.sh`
   - 只使用音频的 baseline。
   - 用于判断临床信息是否形成捷径。
@@ -44,6 +52,10 @@
 - `audio_primary_v4_8s_hop3`
 
 这些目录用于复盘不同输入和不同模型配置下的性能差异。
+
+v6/v7 是待运行的新实验，说明见：
+
+- `MURMUR_EVIDENCE_EXPERIMENT.md`
 
 ## 已移除内容
 

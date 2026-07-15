@@ -48,8 +48,12 @@ class AudioPrimaryOutcomeModel(nn.Module):
         patient_embedding_dim=160,
         num_positions=4,
         position_embedding_dropout=0.0,
+        use_murmur_evidence=False,
+        murmur_evidence_threshold=0.50,
     ):
         super().__init__()
+        self.use_murmur_evidence = use_murmur_evidence
+        self.murmur_evidence_threshold = murmur_evidence_threshold
         self.scale1_encoder = ScaleEncoder(out_dim=branch_dim)
         self.scale2_encoder = ScaleEncoder(out_dim=branch_dim)
         self.scale3_encoder = ScaleEncoder(out_dim=branch_dim)
@@ -88,8 +92,10 @@ class AudioPrimaryOutcomeModel(nn.Module):
             nn.Linear(64, 1),
         )
         self.segment_outcome_head = nn.Linear(segment_embedding_dim, 2)
+        self.segment_murmur_head = nn.Linear(segment_embedding_dim, 2)
+        self.murmur_evidence_dim = 18 if use_murmur_evidence else 0
         self.patient_head = nn.Sequential(
-            nn.Linear(segment_embedding_dim * 2 + clinical_embed_dim, patient_embedding_dim),
+            nn.Linear(segment_embedding_dim * 2 + clinical_embed_dim + self.murmur_evidence_dim, patient_embedding_dim),
             nn.LayerNorm(patient_embedding_dim),
             nn.ReLU(inplace=True),
             nn.Dropout(0.30),
@@ -128,6 +134,7 @@ class AudioPrimaryOutcomeModel(nn.Module):
     ):
         segment_embeddings = self._encode_segments(x_scale1, x_scale2, x_scale3, acoustic, position_index)
         mask = segment_mask.float().clamp(0.0, 1.0)
+        segment_murmur_logits = self.segment_murmur_head(segment_embeddings)
         attention_logits = self.attention(segment_embeddings).squeeze(-1)
         attention_logits = attention_logits.masked_fill(mask <= 0.0, -1e4)
         attention_weights = torch.softmax(attention_logits, dim=1) * mask
@@ -137,7 +144,17 @@ class AudioPrimaryOutcomeModel(nn.Module):
         max_pool = segment_embeddings.masked_fill(mask.unsqueeze(-1) <= 0.0, -1e4).max(dim=1).values
         max_pool = torch.where(max_pool < -1e3, torch.zeros_like(max_pool), max_pool)
         clinical_embedding = self.weak_clinical_head(weak_clinical.float())
-        patient_embedding = self.patient_head(torch.cat([attentive_pool, max_pool, clinical_embedding], dim=1))
+        patient_inputs = [attentive_pool, max_pool, clinical_embedding]
+        murmur_evidence_features = None
+        if self.use_murmur_evidence:
+            murmur_probs = torch.softmax(segment_murmur_logits, dim=-1)[..., 1]
+            murmur_evidence_features = self._murmur_evidence_features(
+                murmur_probs,
+                position_index,
+                mask,
+            )
+            patient_inputs.append(murmur_evidence_features)
+        patient_embedding = self.patient_head(torch.cat(patient_inputs, dim=1))
         logits = self.outcome_head(patient_embedding)
         segment_logits = self.segment_outcome_head(segment_embeddings)
 
@@ -145,10 +162,46 @@ class AudioPrimaryOutcomeModel(nn.Module):
             return {
                 "outcome_logits": logits,
                 "segment_outcome_logits": segment_logits,
+                "segment_murmur_logits": segment_murmur_logits,
                 "patient_embedding": patient_embedding,
                 "attention_weights": attention_weights,
+                "murmur_evidence_features": murmur_evidence_features,
             }
         return logits
+
+    def _masked_topk_mean(self, values, mask, k):
+        masked = values.masked_fill(mask <= 0.0, -1e4)
+        topk_values = torch.topk(masked, k=min(k, values.size(1)), dim=1).values
+        valid_topk = topk_values > -1e3
+        topk_sum = torch.where(valid_topk, topk_values, torch.zeros_like(topk_values)).sum(dim=1)
+        denom = torch.minimum(mask.sum(dim=1), values.new_full((values.size(0),), float(k))).clamp_min(1.0)
+        return topk_sum / denom
+
+    def _murmur_evidence_features(self, murmur_probs, position_index, mask):
+        mask = mask.float()
+        count = mask.sum(dim=1).clamp_min(1.0)
+        masked_probs = murmur_probs * mask
+        mean_prob = masked_probs.sum(dim=1) / count
+        max_prob = murmur_probs.masked_fill(mask <= 0.0, -1e4).max(dim=1).values
+        max_prob = torch.where(max_prob < -1e3, torch.zeros_like(max_prob), max_prob)
+        top3 = self._masked_topk_mean(murmur_probs, mask, 3)
+        top5 = self._masked_topk_mean(murmur_probs, mask, 5)
+        variance = (((murmur_probs - mean_prob.unsqueeze(1)) ** 2) * mask).sum(dim=1) / count
+        std_prob = torch.sqrt(variance.clamp_min(1e-8))
+        soft_evidence = torch.sigmoid((murmur_probs - self.murmur_evidence_threshold) * 10.0) * mask
+        high_ratio = soft_evidence.sum(dim=1) / count
+
+        features = [mean_prob, max_prob, top3, top5, std_prob, high_ratio]
+        for pos_idx in range(len(POSITIONS)):
+            pos_mask = ((position_index == pos_idx).float() * mask)
+            pos_count = pos_mask.sum(dim=1).clamp_min(1.0)
+            pos_probs = murmur_probs * pos_mask
+            pos_mean = pos_probs.sum(dim=1) / pos_count
+            pos_max = murmur_probs.masked_fill(pos_mask <= 0.0, -1e4).max(dim=1).values
+            pos_max = torch.where(pos_max < -1e3, torch.zeros_like(pos_max), pos_max)
+            pos_high = (soft_evidence * pos_mask).sum(dim=1) / pos_count
+            features.extend([pos_mean, pos_max, pos_high])
+        return torch.stack(features, dim=1)
 
 
 def parse_args():
@@ -187,6 +240,10 @@ def parse_args():
     parser.add_argument("--soft-fn-weight", type=float, default=0.0)
     parser.add_argument("--soft-fn-margin", type=float, default=0.35)
     parser.add_argument("--alpha-segment-outcome", type=float, default=0.0)
+    parser.add_argument("--alpha-segment-murmur", type=float, default=0.0)
+    parser.add_argument("--segment-murmur-present-weight", type=float, default=2.0)
+    parser.add_argument("--use-murmur-evidence", action="store_true")
+    parser.add_argument("--murmur-evidence-threshold", type=float, default=0.50)
     parser.add_argument("--segment-evidence-threshold", type=float, default=0.50)
     parser.add_argument(
         "--selection-mode",
@@ -237,7 +294,7 @@ def score_to_json(score):
     return json.dumps(values, ensure_ascii=False)
 
 
-def outcome_loss(logits, batch, class_weights, args, segment_logits=None):
+def outcome_loss(logits, batch, class_weights, args, segment_logits=None, segment_murmur_logits=None):
     ce_loss = F.cross_entropy(logits, batch["y_outcome"], weight=class_weights)
     probs = torch.softmax(logits, dim=1)[:, 1]
 
@@ -278,11 +335,30 @@ def outcome_loss(logits, batch, class_weights, args, segment_logits=None):
         flat_loss = F.cross_entropy(flat_logits, flat_labels, weight=class_weights, reduction="none")
         segment_loss = (flat_loss * flat_mask).sum() / flat_mask.sum().clamp_min(1.0)
 
+    segment_murmur_loss = logits.new_tensor(0.0)
+    if args.alpha_segment_murmur > 0.0 and segment_murmur_logits is not None:
+        known_murmur = (batch["y_murmur"] == 0) | (batch["y_murmur"] == 1)
+        if known_murmur.any():
+            batch_size, num_segments = segment_murmur_logits.shape[:2]
+            flat_logits = segment_murmur_logits.reshape(batch_size * num_segments, -1)
+            flat_labels = batch["y_murmur"].clamp(0, 1).unsqueeze(1).expand(batch_size, num_segments).reshape(-1)
+            flat_segment_mask = batch["segment_mask"].float().reshape(-1)
+            flat_known = known_murmur.unsqueeze(1).expand(batch_size, num_segments).reshape(-1).float()
+            flat_mask = flat_segment_mask * flat_known
+            murmur_weights = torch.tensor(
+                [1.0, args.segment_murmur_present_weight],
+                dtype=torch.float32,
+                device=logits.device,
+            )
+            flat_loss = F.cross_entropy(flat_logits, flat_labels, weight=murmur_weights, reduction="none")
+            segment_murmur_loss = (flat_loss * flat_mask).sum() / flat_mask.sum().clamp_min(1.0)
+
     return (
         ce_loss
         + args.hard_negative_weight * hard_negative_loss
         + args.soft_fn_weight * soft_fn_loss
         + args.alpha_segment_outcome * segment_loss
+        + args.alpha_segment_murmur * segment_murmur_loss
     )
 
 
@@ -308,6 +384,7 @@ def train_one_epoch(model, loader, optimizer, device, class_weights, args):
             class_weights,
             args,
             segment_logits=outputs.get("segment_outcome_logits"),
+            segment_murmur_logits=outputs.get("segment_murmur_logits"),
         )
         loss.backward()
         torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
@@ -348,7 +425,14 @@ def make_balanced_sampler(dataset, indices, args):
     )
 
 
-def collect_predictions(model, loader, dataset, device, segment_evidence_threshold=0.50):
+def collect_predictions(
+    model,
+    loader,
+    dataset,
+    device,
+    segment_evidence_threshold=0.50,
+    evidence_score_source="segment_outcome_head",
+):
     raw_df = dataset.df.set_index("Patient ID", drop=False)
     rows = []
     model.eval()
@@ -366,7 +450,8 @@ def collect_predictions(model, loader, dataset, device, segment_evidence_thresho
                 return_embedding=True,
             )
             probs = torch.softmax(outputs["outcome_logits"], dim=1)[:, 1].detach().cpu().numpy()
-            segment_probs = torch.softmax(outputs["segment_outcome_logits"], dim=-1)[..., 1].detach().cpu().numpy()
+            segment_outcome_probs = torch.softmax(outputs["segment_outcome_logits"], dim=-1)[..., 1].detach().cpu().numpy()
+            segment_murmur_probs = torch.softmax(outputs["segment_murmur_logits"], dim=-1)[..., 1].detach().cpu().numpy()
             attention = outputs["attention_weights"].detach().cpu().numpy()
             position_index = batch["position_index"].cpu().numpy()
             segment_mask = batch["segment_mask"].cpu().numpy()
@@ -377,27 +462,43 @@ def collect_predictions(model, loader, dataset, device, segment_evidence_thresho
                 valid = segment_mask[i] > 0.0
                 pos_values = position_index[i][valid]
                 weights = attention[i][valid] if valid.any() else np.asarray([])
-                valid_segment_probs = segment_probs[i][valid] if valid.any() else np.asarray([])
+                valid_segment_outcome_probs = segment_outcome_probs[i][valid] if valid.any() else np.asarray([])
+                valid_segment_murmur_probs = segment_murmur_probs[i][valid] if valid.any() else np.asarray([])
+                evidence_probs = (
+                    valid_segment_murmur_probs
+                    if evidence_score_source == "segment_murmur_head"
+                    else valid_segment_outcome_probs
+                )
                 attention_by_position = {f"attention_{pos}": 0.0 for pos in POSITIONS}
                 evidence_by_position = {f"evidence_{pos}": 0 for pos in POSITIONS}
+                murmur_by_position = {f"segment_murmur_mean_{pos}": np.nan for pos in POSITIONS}
+                murmur_max_by_position = {f"segment_murmur_max_{pos}": np.nan for pos in POSITIONS}
                 top_attention_position = ""
                 top_attention_weight = np.nan
                 segment_mean_prob = np.nan
                 segment_max_prob = np.nan
+                segment_murmur_mean_prob = np.nan
+                segment_murmur_max_prob = np.nan
                 evidence_segment_count = 0
                 evidence_position_count = 0
                 if len(weights) > 0:
                     top_idx = int(np.argmax(weights))
                     top_attention_position = POSITIONS[int(pos_values[top_idx])]
                     top_attention_weight = float(weights[top_idx])
-                    segment_mean_prob = float(valid_segment_probs.mean())
-                    segment_max_prob = float(valid_segment_probs.max())
-                    evidence_mask = valid_segment_probs >= segment_evidence_threshold
+                    segment_mean_prob = float(valid_segment_outcome_probs.mean())
+                    segment_max_prob = float(valid_segment_outcome_probs.max())
+                    segment_murmur_mean_prob = float(valid_segment_murmur_probs.mean())
+                    segment_murmur_max_prob = float(valid_segment_murmur_probs.max())
+                    evidence_mask = evidence_probs >= segment_evidence_threshold
                     evidence_segment_count = int(evidence_mask.sum())
                     for pos_idx, pos_name in enumerate(POSITIONS):
                         attention_by_position[f"attention_{pos_name}"] = float(weights[pos_values == pos_idx].sum())
                         evidence_count = int(evidence_mask[pos_values == pos_idx].sum())
                         evidence_by_position[f"evidence_{pos_name}"] = evidence_count
+                        pos_murmur = valid_segment_murmur_probs[pos_values == pos_idx]
+                        if pos_murmur.size:
+                            murmur_by_position[f"segment_murmur_mean_{pos_name}"] = float(pos_murmur.mean())
+                            murmur_max_by_position[f"segment_murmur_max_{pos_name}"] = float(pos_murmur.max())
                     evidence_position_count = int(
                         sum(1 for pos_name in POSITIONS if evidence_by_position[f"evidence_{pos_name}"] > 0)
                     )
@@ -415,6 +516,9 @@ def collect_predictions(model, loader, dataset, device, segment_evidence_thresho
                     "segment_count": int(valid.sum()),
                     "segment_mean_prob": segment_mean_prob,
                     "segment_max_prob": segment_max_prob,
+                    "segment_murmur_mean_prob": segment_murmur_mean_prob,
+                    "segment_murmur_max_prob": segment_murmur_max_prob,
+                    "evidence_score_source": evidence_score_source,
                     "evidence_segment_count": evidence_segment_count,
                     "evidence_position_count": evidence_position_count,
                     "top_attention_position": top_attention_position,
@@ -430,12 +534,24 @@ def collect_predictions(model, loader, dataset, device, segment_evidence_thresho
                     row[f"segments_{pos_name}"] = int(np.sum(pos_values == POSITIONS.index(pos_name)))
                 row.update(attention_by_position)
                 row.update(evidence_by_position)
+                row.update(murmur_by_position)
+                row.update(murmur_max_by_position)
                 rows.append(row)
     return pd.DataFrame(rows)
 
 
 def evaluate(model, loader, dataset, device, target_recall, args):
-    df = collect_predictions(model, loader, dataset, device, args.segment_evidence_threshold)
+    evidence_score_source = (
+        "segment_murmur_head" if args.use_murmur_evidence or args.alpha_segment_murmur > 0.0 else "segment_outcome_head"
+    )
+    df = collect_predictions(
+        model,
+        loader,
+        dataset,
+        device,
+        args.segment_evidence_threshold,
+        evidence_score_source=evidence_score_source,
+    )
     selected = search_recall_threshold(
         df["y_outcome"].to_numpy(dtype=np.int64),
         df["prob_abnormal"].to_numpy(dtype=np.float32),
@@ -505,6 +621,8 @@ def main():
         acoustic_dim=val_dataset.acoustic_dim,
         weak_clinical_dim=val_dataset.weak_clinical_dim,
         position_embedding_dropout=args.position_embedding_dropout,
+        use_murmur_evidence=args.use_murmur_evidence,
+        murmur_evidence_threshold=args.murmur_evidence_threshold,
     ).to(device)
     class_weights = torch.tensor([1.0, args.outcome_abnormal_weight], dtype=torch.float32, device=device)
     optimizer = torch.optim.AdamW(model.parameters(), lr=args.lr, weight_decay=args.weight_decay)
@@ -620,7 +738,17 @@ def main():
         checkpoint_path,
     )
     model.load_state_dict(best_state if best_state is not None else model.state_dict())
-    pred_df = collect_predictions(model, val_loader, val_dataset, device, args.segment_evidence_threshold)
+    evidence_score_source = (
+        "segment_murmur_head" if args.use_murmur_evidence or args.alpha_segment_murmur > 0.0 else "segment_outcome_head"
+    )
+    pred_df = collect_predictions(
+        model,
+        val_loader,
+        val_dataset,
+        device,
+        args.segment_evidence_threshold,
+        evidence_score_source=evidence_score_source,
+    )
     selection_notes = {
         "auc": "Checkpoint selected by ROC-AUC, then PR-AUC, specificity, and accuracy.",
         "recall_specificity": "Checkpoint selected by target-recall feasibility, then specificity, ROC-AUC, PR-AUC, and accuracy.",
@@ -646,7 +774,9 @@ def main():
             "training_strategy_note": (
                 "Optional controls: training-time position dropout, outcome/murmur/position subgroup sampler, "
                 "position embedding dropout, scoped hard-negative penalty for high-scoring normal samples, and "
-                "soft false-negative penalty for low-scoring abnormal samples. See saved args for enabled settings."
+                "soft false-negative penalty for low-scoring abnormal samples. Segment Murmur auxiliary supervision "
+                "and Murmur-evidence aggregation can be enabled for audio-derived evidence experiments. "
+                "See saved args for enabled settings."
             ),
             "segment_config": {
                 "segment_duration_sec": args.segment_duration,

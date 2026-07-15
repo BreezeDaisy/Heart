@@ -64,7 +64,12 @@ def load_model(checkpoint_path, dataset, device):
     ).to(device)
     state = checkpoint.get("model_state", checkpoint) if isinstance(checkpoint, dict) else checkpoint
     load_result = model.load_state_dict(state, strict=False)
-    allowed_missing = {"segment_outcome_head.weight", "segment_outcome_head.bias"}
+    allowed_missing = {
+        "segment_outcome_head.weight",
+        "segment_outcome_head.bias",
+        "segment_murmur_head.weight",
+        "segment_murmur_head.bias",
+    }
     unexpected_missing = [key for key in load_result.missing_keys if key not in allowed_missing]
     if unexpected_missing or load_result.unexpected_keys:
         raise RuntimeError(
