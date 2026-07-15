@@ -65,6 +65,7 @@ results/audio_primary_v3_supplement/diagnostic_export_summary.json
 - `start_sec`
 - `end_sec`
 - `segment_prob_abnormal`
+- `segment_score_source`
 - `attention_weight`
 - `is_evidence_segment`
 - `patient_prob_abnormal`
@@ -73,6 +74,16 @@ results/audio_primary_v3_supplement/diagnostic_export_summary.json
 - acoustic descriptors
 
 对应外部分析需要的第 2 项信息。
+
+注意：v3 checkpoint 训练时还没有 `segment_outcome_head`，因此 segment 风险不是来自未训练的 segment head。导出脚本会使用 `single_segment_patient_forward`：
+
+```text
+只保留当前单个 segment + 原患者临床信息
+送入已训练的患者级 outcome head
+得到该 segment 的异常风险代理分数
+```
+
+这比使用随机初始化的 segment head 更可靠，也更贴近 v3 模型真实学到的患者级判别能力。
 
 ## 3. 每位患者各位置录音数量和时长统计
 

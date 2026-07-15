@@ -54,7 +54,7 @@ def parse_args():
 
 
 def load_model(checkpoint_path, dataset, device):
-    checkpoint = torch.load(checkpoint_path, map_location=device)
+    checkpoint = torch.load(checkpoint_path, map_location=device, weights_only=False)
     saved_args = checkpoint.get("args", {}) if isinstance(checkpoint, dict) else {}
     position_dropout = float(saved_args.get("position_embedding_dropout", 0.0))
     model = AudioPrimaryOutcomeModel(
@@ -63,7 +63,21 @@ def load_model(checkpoint_path, dataset, device):
         position_embedding_dropout=position_dropout,
     ).to(device)
     state = checkpoint.get("model_state", checkpoint) if isinstance(checkpoint, dict) else checkpoint
-    model.load_state_dict(state)
+    load_result = model.load_state_dict(state, strict=False)
+    allowed_missing = {"segment_outcome_head.weight", "segment_outcome_head.bias"}
+    unexpected_missing = [key for key in load_result.missing_keys if key not in allowed_missing]
+    if unexpected_missing or load_result.unexpected_keys:
+        raise RuntimeError(
+            "Checkpoint is not compatible with AudioPrimaryOutcomeModel. "
+            f"missing={load_result.missing_keys}, unexpected={load_result.unexpected_keys}"
+        )
+    segment_head_loaded = not any(key in load_result.missing_keys for key in allowed_missing)
+    model.segment_head_loaded_for_export = segment_head_loaded
+    if not segment_head_loaded:
+        print(
+            "Checkpoint has no trained segment_outcome_head; "
+            "segment_prob_abnormal will be exported with single-segment patient-forward scores."
+        )
     model.eval()
     return model, checkpoint
 
@@ -121,6 +135,31 @@ def threshold_tradeoff(y_true, probs, max_fn_values=(5, 7, 10), max_fp_values=(1
     return df, pd.DataFrame(summary)
 
 
+def single_segment_patient_probs(model, moved_batch, patient_index):
+    valid = moved_batch["segment_mask"][patient_index] > 0.0
+    if not bool(valid.any()):
+        return np.asarray([], dtype=np.float32)
+
+    x1 = moved_batch["x_scale1"][patient_index][valid].unsqueeze(1)
+    x2 = moved_batch["x_scale2"][patient_index][valid].unsqueeze(1)
+    x3 = moved_batch["x_scale3"][patient_index][valid].unsqueeze(1)
+    acoustic = moved_batch["acoustic"][patient_index][valid].unsqueeze(1)
+    position = moved_batch["position_index"][patient_index][valid].unsqueeze(1)
+    mask = torch.ones((x1.size(0), 1), dtype=moved_batch["segment_mask"].dtype, device=x1.device)
+    weak_clinical = moved_batch["weak_clinical"][patient_index].unsqueeze(0).repeat(x1.size(0), 1)
+    outputs = model(
+        x1,
+        x2,
+        x3,
+        acoustic,
+        position,
+        mask,
+        weak_clinical,
+        return_embedding=True,
+    )
+    return torch.softmax(outputs["outcome_logits"], dim=1)[:, 1].detach().cpu().numpy()
+
+
 def export_predictions(model, loader, dataset, device, args):
     raw_df = dataset.df.set_index("Patient ID", drop=False)
     patient_rows = []
@@ -140,7 +179,12 @@ def export_predictions(model, loader, dataset, device, args):
                 return_embedding=True,
             )
             patient_probs = torch.softmax(outputs["outcome_logits"], dim=1)[:, 1].detach().cpu().numpy()
-            segment_probs = torch.softmax(outputs["segment_outcome_logits"], dim=-1)[..., 1].detach().cpu().numpy()
+            if getattr(model, "segment_head_loaded_for_export", False):
+                segment_probs_from_head = torch.softmax(outputs["segment_outcome_logits"], dim=-1)[..., 1].detach().cpu().numpy()
+                segment_score_source = "trained_segment_head"
+            else:
+                segment_probs_from_head = None
+                segment_score_source = "single_segment_patient_forward"
             attention = outputs["attention_weights"].detach().cpu().numpy()
             position_index = batch["position_index"].cpu().numpy()
             starts = batch["segment_start_sec"].cpu().numpy()
@@ -154,7 +198,10 @@ def export_predictions(model, loader, dataset, device, args):
                 valid = mask[i] > 0.0
                 pos_values = position_index[i][valid]
                 start_values = starts[i][valid]
-                seg_probs = segment_probs[i][valid]
+                if segment_probs_from_head is not None:
+                    seg_probs = segment_probs_from_head[i][valid]
+                else:
+                    seg_probs = single_segment_patient_probs(model, moved, i)
                 weights = attention[i][valid]
                 acoustic_values = acoustic[i][valid]
                 selected_pred = int(patient_probs[i] >= args.selected_threshold) if args.selected_threshold is not None else -1
@@ -194,6 +241,7 @@ def export_predictions(model, loader, dataset, device, args):
                     "has_all_positions": bool(batch["has_all_positions"][i].item()),
                     "available_positions": ",".join(batch["available_positions"][i]),
                     "segment_count": int(valid.sum()),
+                    "segment_score_source": segment_score_source,
                     "segment_mean_prob": float(seg_probs.mean()) if seg_probs.size else np.nan,
                     "segment_max_prob": float(seg_probs.max()) if seg_probs.size else np.nan,
                     "segment_top3_mean_prob": topk_mean(seg_probs, 3),
@@ -233,6 +281,7 @@ def export_predictions(model, loader, dataset, device, args):
                         "start_sec": float(start_sec),
                         "end_sec": float(start_sec + args.segment_duration),
                         "segment_prob_abnormal": float(prob),
+                        "segment_score_source": segment_score_source,
                         "attention_weight": float(attn),
                         "is_evidence_segment": int(prob >= args.segment_evidence_threshold),
                         "patient_prob_abnormal": float(patient_probs[i]),
@@ -314,6 +363,9 @@ def write_summary(patient_df, segment_df, checkpoint, output_dir, args):
         "report_threshold": threshold_for_report,
         "checkpoint_best_metric": checkpoint.get("best_metric") if isinstance(checkpoint, dict) else None,
         "checkpoint_best_epoch": checkpoint.get("best_epoch") if isinstance(checkpoint, dict) else None,
+        "segment_score_source": (
+            patient_df["segment_score_source"].iloc[0] if "segment_score_source" in patient_df.columns else ""
+        ),
         "files": {
             "patient_level": str(output_dir / "patient_level_diagnostics.csv"),
             "segment_level": str(output_dir / "segment_level_diagnostics.csv"),
