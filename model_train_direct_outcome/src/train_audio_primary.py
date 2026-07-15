@@ -187,21 +187,11 @@ def parse_args():
     parser.add_argument("--soft-fn-weight", type=float, default=0.0)
     parser.add_argument("--soft-fn-margin", type=float, default=0.35)
     parser.add_argument("--alpha-segment-outcome", type=float, default=0.0)
-    parser.add_argument("--triage-low-threshold", type=float, default=0.20)
-    parser.add_argument("--triage-high-threshold", type=float, default=0.45)
-    parser.add_argument("--triage-low-min", type=float, default=0.05)
-    parser.add_argument("--triage-low-max", type=float, default=0.40)
-    parser.add_argument("--triage-high-min", type=float, default=0.20)
-    parser.add_argument("--triage-high-max", type=float, default=0.80)
-    parser.add_argument("--triage-threshold-step", type=float, default=0.02)
     parser.add_argument("--segment-evidence-threshold", type=float, default=0.50)
-    parser.add_argument("--min-evidence-segments", type=int, default=2)
-    parser.add_argument("--min-evidence-positions", type=int, default=2)
-    parser.add_argument("--triage-search", action="store_true")
     parser.add_argument(
         "--selection-mode",
         type=str,
-        choices=["auc", "recall_specificity", "fn_fp", "triage_fn_fp"],
+        choices=["auc", "recall_specificity", "fn_fp"],
         default="auc",
     )
     parser.add_argument("--csv-path", type=str, default=str(TRAIN_CSV))
@@ -444,101 +434,6 @@ def collect_predictions(model, loader, dataset, device, segment_evidence_thresho
     return pd.DataFrame(rows)
 
 
-def apply_triage(df, low_threshold, high_threshold, min_evidence_segments, min_evidence_positions):
-    work = df.copy()
-    enough_evidence = (
-        (work["evidence_segment_count"] >= min_evidence_segments)
-        & (work["evidence_position_count"] >= min_evidence_positions)
-    )
-    work["triage_decision"] = "Uncertain"
-    work.loc[work["prob_abnormal"] < low_threshold, "triage_decision"] = "Normal"
-    work.loc[(work["prob_abnormal"] >= high_threshold) & enough_evidence, "triage_decision"] = "Abnormal"
-    return work
-
-
-def triage_metrics(df):
-    y_true = df["y_outcome"].to_numpy(dtype=np.int64)
-    decision = df["triage_decision"].to_numpy()
-    abnormal = y_true == 1
-    normal = y_true == 0
-
-    direct_tp = int(np.sum(abnormal & (decision == "Abnormal")))
-    uncertain_abnormal = int(np.sum(abnormal & (decision == "Uncertain")))
-    unsafe_fn = int(np.sum(abnormal & (decision == "Normal")))
-    direct_fp = int(np.sum(normal & (decision == "Abnormal")))
-    uncertain_normal = int(np.sum(normal & (decision == "Uncertain")))
-    tn = int(np.sum(normal & (decision == "Normal")))
-    abnormal_total = int(np.sum(abnormal))
-    normal_total = int(np.sum(normal))
-    total = int(len(df))
-    return {
-        "triage_direct_tp": direct_tp,
-        "triage_uncertain_abnormal": uncertain_abnormal,
-        "triage_unsafe_fn": unsafe_fn,
-        "triage_direct_fp": direct_fp,
-        "triage_uncertain_normal": uncertain_normal,
-        "triage_tn": tn,
-        "triage_abnormal_total": abnormal_total,
-        "triage_normal_total": normal_total,
-        "triage_uncertain_total": int(np.sum(decision == "Uncertain")),
-        "triage_abnormal_decisions": int(np.sum(decision == "Abnormal")),
-        "triage_normal_decisions": int(np.sum(decision == "Normal")),
-        "triage_safety_recall": float((direct_tp + uncertain_abnormal) / max(abnormal_total, 1)),
-        "triage_direct_recall": float(direct_tp / max(abnormal_total, 1)),
-        "triage_direct_fp_rate": float(direct_fp / max(normal_total, 1)),
-        "triage_normal_clear_rate": float(tn / max(normal_total, 1)),
-        "triage_coverage": float((total - np.sum(decision == "Uncertain")) / max(total, 1)),
-        "triage_direct_precision": float(direct_tp / max(direct_tp + direct_fp, 1)),
-    }
-
-
-def search_triage_thresholds(df, args):
-    lows = np.arange(args.triage_low_min, args.triage_low_max + 1e-9, args.triage_threshold_step)
-    highs = np.arange(args.triage_high_min, args.triage_high_max + 1e-9, args.triage_threshold_step)
-    best_score = None
-    best = None
-    for low in lows:
-        for high in highs:
-            if high <= low:
-                continue
-            triaged = apply_triage(
-                df,
-                float(low),
-                float(high),
-                args.min_evidence_segments,
-                args.min_evidence_positions,
-            )
-            metrics = triage_metrics(triaged)
-            fn_target_met = args.max_fn < 0 or metrics["triage_unsafe_fn"] <= args.max_fn
-            if fn_target_met:
-                score = (
-                    1,
-                    -metrics["triage_direct_fp"],
-                    -metrics["triage_unsafe_fn"],
-                    -metrics["triage_uncertain_normal"],
-                    metrics["triage_direct_precision"],
-                    metrics["triage_coverage"],
-                )
-            else:
-                score = (
-                    0,
-                    -metrics["triage_unsafe_fn"],
-                    -metrics["triage_direct_fp"],
-                    -metrics["triage_uncertain_normal"],
-                    metrics["triage_safety_recall"],
-                    metrics["triage_coverage"],
-                )
-            if best_score is None or score > best_score:
-                best_score = score
-                best = {
-                    **metrics,
-                    "triage_low_threshold": float(low),
-                    "triage_high_threshold": float(high),
-                    "triage_score": list(score),
-                }
-    return best
-
-
 def evaluate(model, loader, dataset, device, target_recall, args):
     df = collect_predictions(model, loader, dataset, device, args.segment_evidence_threshold)
     selected = search_recall_threshold(
@@ -549,77 +444,7 @@ def evaluate(model, loader, dataset, device, target_recall, args):
     roc_auc, pr_auc = auc_metrics_from_df(df)
     selected["roc_auc"] = roc_auc
     selected["pr_auc"] = pr_auc
-    if args.selection_mode == "triage_fn_fp":
-        triage_selected = search_triage_thresholds(df, args)
-        selected.update(triage_selected)
-        selected["fn"] = triage_selected["triage_unsafe_fn"]
-        selected["fp"] = triage_selected["triage_direct_fp"]
-        selected["tp"] = triage_selected["triage_direct_tp"] + triage_selected["triage_uncertain_abnormal"]
-        selected["tn"] = triage_selected["triage_tn"]
-        selected["accuracy"] = float(
-            (triage_selected["triage_direct_tp"] + triage_selected["triage_tn"]) / max(len(df), 1)
-        )
-        selected["abnormal_recall"] = triage_selected["triage_safety_recall"]
-        selected["abnormal_precision"] = triage_selected["triage_direct_precision"]
-        selected["specificity"] = triage_selected["triage_normal_clear_rate"]
-        selected["threshold"] = triage_selected["triage_low_threshold"]
     return selected
-
-
-def write_triage_outputs(pred_df, output_dir, args):
-    output_dir = Path(output_dir)
-    output_dir.mkdir(parents=True, exist_ok=True)
-    if args.triage_search:
-        selected = search_triage_thresholds(pred_df, args)
-        low_threshold = selected["triage_low_threshold"]
-        high_threshold = selected["triage_high_threshold"]
-    else:
-        low_threshold = args.triage_low_threshold
-        high_threshold = args.triage_high_threshold
-        selected = None
-
-    triaged = apply_triage(
-        pred_df,
-        low_threshold,
-        high_threshold,
-        args.min_evidence_segments,
-        args.min_evidence_positions,
-    )
-    metrics = triage_metrics(triaged)
-    metrics.update(
-        {
-            "triage_low_threshold": low_threshold,
-            "triage_high_threshold": high_threshold,
-            "segment_evidence_threshold": args.segment_evidence_threshold,
-            "min_evidence_segments": args.min_evidence_segments,
-            "min_evidence_positions": args.min_evidence_positions,
-            "triage_search": bool(args.triage_search),
-        }
-    )
-    if selected:
-        metrics["triage_score"] = selected.get("triage_score")
-
-    triage_predictions_path = output_dir / "triage_predictions.csv"
-    triage_summary_path = output_dir / "triage_summary.json"
-    triage_group_summary_path = output_dir / "triage_group_summary.csv"
-    triaged.to_csv(triage_predictions_path, index=False, encoding="utf-8-sig")
-
-    rows = []
-    for column in ["outcome", "murmur", "position_count", "has_all_positions", "Age", "Sex"]:
-        if column not in triaged.columns:
-            continue
-        for value, group in triaged.groupby(column, dropna=False):
-            group_metrics = triage_metrics(group)
-            rows.append({"group_by": column, "group_value": str(value), "total": int(len(group)), **group_metrics})
-    pd.DataFrame(rows).to_csv(triage_group_summary_path, index=False, encoding="utf-8-sig")
-
-    metrics["paths"] = {
-        "triage_predictions": str(triage_predictions_path),
-        "triage_summary": str(triage_summary_path),
-        "triage_group_summary": str(triage_group_summary_path),
-    }
-    triage_summary_path.write_text(json.dumps(metrics, ensure_ascii=False, indent=2), encoding="utf-8")
-    return metrics
 
 
 def main():
@@ -695,31 +520,7 @@ def main():
         metric = evaluate(model, val_loader, val_dataset, device, args.target_recall, args)
         roc_auc_score_value = metric["roc_auc"] if metric["roc_auc"] is not None else 0.0
         pr_auc_score_value = metric["pr_auc"] if metric["pr_auc"] is not None else 0.0
-        if args.selection_mode == "triage_fn_fp":
-            fn_target_met = args.max_fn < 0 or metric["triage_unsafe_fn"] <= args.max_fn
-            if fn_target_met:
-                score = (
-                    1,
-                    -metric["triage_direct_fp"],
-                    -metric["triage_unsafe_fn"],
-                    -metric["triage_uncertain_normal"],
-                    metric["triage_direct_precision"],
-                    metric["triage_coverage"],
-                    roc_auc_score_value,
-                    pr_auc_score_value,
-                )
-            else:
-                score = (
-                    0,
-                    -metric["triage_unsafe_fn"],
-                    -metric["triage_direct_fp"],
-                    -metric["triage_uncertain_normal"],
-                    metric["triage_safety_recall"],
-                    metric["triage_coverage"],
-                    roc_auc_score_value,
-                    pr_auc_score_value,
-                )
-        elif args.selection_mode == "fn_fp":
+        if args.selection_mode == "fn_fp":
             fn_target_met = args.max_fn < 0 or metric["fn"] <= args.max_fn
             if fn_target_met:
                 score = (
@@ -765,13 +566,6 @@ def main():
             f"recall={metric['abnormal_recall']:.4f} | specificity={metric['specificity']:.4f} | "
             f"FN={metric['fn']} | FP={metric['fp']}"
         )
-        if args.selection_mode == "triage_fn_fp":
-            print(
-                f"  Triage | low={metric['triage_low_threshold']:.2f} | "
-                f"high={metric['triage_high_threshold']:.2f} | "
-                f"unsafe_FN={metric['triage_unsafe_fn']} | direct_FP={metric['triage_direct_fp']} | "
-                f"uncertain={metric['triage_uncertain_total']} | coverage={metric['triage_coverage']:.4f}"
-            )
         improved = best_score is None or score > best_score
         history_row = {
             "epoch": epoch + 1,
@@ -827,12 +621,10 @@ def main():
     )
     model.load_state_dict(best_state if best_state is not None else model.state_dict())
     pred_df = collect_predictions(model, val_loader, val_dataset, device, args.segment_evidence_threshold)
-    triage_summary = write_triage_outputs(pred_df, args.output_dir, args)
     selection_notes = {
         "auc": "Checkpoint selected by ROC-AUC, then PR-AUC, specificity, and accuracy.",
         "recall_specificity": "Checkpoint selected by target-recall feasibility, then specificity, ROC-AUC, PR-AUC, and accuracy.",
         "fn_fp": "Checkpoint selected by FN/FP business objective: before FN target is met, reduce FN first; after FN target is met, reduce FP first.",
-        "triage_fn_fp": "Checkpoint selected by triage business objective: unsafe FN must stay controlled, then direct FP is minimized; Uncertain is treated as review/re-collection rather than direct Abnormal.",
     }
     summary = write_diagnostics(
         pred_df,
@@ -845,7 +637,6 @@ def main():
             "best_epoch": best_epoch,
             "epoch_history_path": str(epoch_history_path),
             "epoch_history_json_path": str(epoch_history_json_path),
-            "triage_summary": triage_summary,
             "selection_note": selection_notes.get(args.selection_mode, args.selection_mode),
             "feature_note": (
                 "Audio-first model using log-mel segments, auscultation position embedding, handcrafted acoustic "

@@ -1,201 +1,117 @@
-# HMS Repro Package
+# Heart Sound Direct Outcome Experiments
 
-This folder is a handoff package for reproducing the final HMS front-end training line and the downstream binary outcome stage used by the best final pipeline.
+本仓库保留当前任务主线：用患者级心音输入直接预测 `Outcome` 二分类结果。
 
-It covers:
+核心业务目标：
 
-- retrain `final_hms_single_v1`
-- regenerate `hms_features_final_single_v1.csv`
-- retrain the final binary outcome model on the regenerated HMS features
-- generate the final binary outcome output CSV
+- 尽量降低 Abnormal 漏判，即降低 FN。
+- 在 FN 可控的前提下降低 Normal 误判，即降低 FP。
+- 当前证据显示，`Murmur=Absent` 子集中 Abnormal 与 Normal 高度重叠，是主要瓶颈。
 
-It does not focus on the 3-class display report. The reproduction target here is the binary outcome stage.
+## 当前保留内容
 
-## What is included
+### 有效或有分析价值的训练入口
 
-- `train_hms_final.py`: one-command launcher for the final HMS retraining setup
-- `generate_hms_features_final.py`: regenerate the final HMS feature table from the retrained checkpoint
-- `check_repro_ready.py`: quick layout check before training
-- `reproduce_hms.py`: one-command check + retrain + feature regeneration
-- `reproduce_full_outcome.py`: one-command check + HMS retrain + feature regeneration + outcome retrain + binary outcome inference
-- `requirements.txt`: Python dependencies
-- `src/`: the actual training and feature-generation source files
-- `data/circor/training_data.csv`: copied training metadata table
+- `run_audio_primary.sh`
+  - audio-primary v1。
+  - 原始 audio-primary 主线，用于和后续版本对比。
 
-## What another person still needs
+- `run_audio_primary_v3.sh`
+  - audio-primary v3。
+  - 加入 position dropout 和 hard negative 约束后的有效对照版本。
 
-The full training wav set is required and is not duplicated here by default.
+- `run_audio_primary_v4.sh`
+  - audio-primary v4。
+  - 每段 8 秒、hop 3 秒。
+  - 当前更适合作为下一轮复现实验和分析的主入口。
 
-Put the training wav files here:
+- `run_audio_only_baseline.sh`
+  - 只使用音频的 baseline。
+  - 用于判断临床信息是否形成捷径。
 
-`model_train/data/circor/training_data/`
+- `run_clinical_baseline.sh`
+  - 只使用临床信息的 baseline。
+  - 用于检查 age/sex/height/weight 等临床字段是否过强影响结果。
 
-Expected naming format for the raw training directory:
+### 结果目录
 
-- `12345_AV.wav`
-- `12345_MV.wav`
-- `12345_PV.wav`
-- `12345_TV.wav`
+保留的 `results/` 子目录：
 
-## Recommended layout
+- `audio_only_baseline_v1`
+- `clinical_only_baseline_v1`
+- `audio_primary_v1`
+- `audio_primary_v3`
+- `audio_primary_v4_8s_hop3`
 
-```text
-model_train/
-  README.md
-  requirements.txt
-  check_repro_ready.py
-  train_hms_final.py
-  generate_hms_features_final.py
-  checkpoints/
-  data/
-    circor/
-      training_data.csv
-      training_data/
-        *.wav
-  src/
-    ...
+这些目录用于复盘不同输入和不同模型配置下的性能差异。
+
+## 已移除内容
+
+已删除明确无效或容易误导后续工作的版本：
+
+- audio-primary v2
+  - 过度正则化后效果下降。
+
+- audio-primary v5 triage / fnfp
+  - 之前出现 all-Uncertain 退化，`coverage=0` 仍可能被错误保存为 best。
+  - 已删除 v5 启动脚本和结果目录。
+  - 已从 `src/train_audio_primary.py` 移除 triage checkpoint 选择逻辑。
+
+- 早期 direct-outcome residual / position-aware 训练入口
+  - 已不是当前主线。
+  - 保留其结论在分析文档中讨论，不再保留可启动入口。
+
+- 旧 HMS 两阶段训练/推理入口
+  - 与当前 direct outcome 主线不一致。
+  - 仅保留 `dataset_hms.py` 和 `model_hms.py`，因为 audio-primary 仍复用位置定义和 `ScaleEncoder`。
+
+## 推荐训练命令
+
+服务器环境配置：
+
+```bash
+chmod +x setup_gpu_env.sh run_audio_primary_v4.sh
+./setup_gpu_env.sh
 ```
 
-## Setup
+启动当前推荐版本：
 
-From inside `model_train/`:
-
-```powershell
-python -m venv .venv
-.\.venv\Scripts\activate
-pip install -r requirements.txt
-python check_repro_ready.py
+```bash
+./run_audio_primary_v4.sh
 ```
 
-If `check_repro_ready.py` reports missing wav files, copy the full training wav directory into `data/circor/training_data/` and rerun the check.
+快速 smoke test：
 
-## What the HMS stage uses
-
-The HMS training code directly reads the raw wavs under:
-
-`model_train/data/circor/training_data/`
-
-It does not use `training_data_clean/` or `training_data_clean_light/` for this final line.
-
-The `dataset_hms.py` file is required because it is the loader that:
-
-- reads the raw wav files
-- slices them into 3-second segments
-- normalizes them
-- converts them into log-mel inputs on the fly for training
-
-## Retrain the final HMS model
-
-Run:
-
-```powershell
-python train_hms_final.py
+```bash
+EPOCHS=2 PATIENCE=2 BATCH_SIZE=4 MAX_SEGMENTS=8 ./run_audio_primary_v4.sh
 ```
 
-Or run the full reproduction flow in one command:
+保留完整日志：
 
-```powershell
-python reproduce_hms.py
+```bash
+./run_audio_primary_v4.sh 2>&1 | tee logs/audio_primary_v4_$(date +%Y%m%d_%H%M%S).log
 ```
 
-## Retrain the final binary outcome stage
+## 输出说明
 
-After the HMS feature CSV is regenerated, run:
+训练完成后主要看：
 
-```powershell
-python train_outcome_hms_final.py
-```
+- `results/<version>/diagnosis_summary.json`
+- `results/<version>/patient_predictions.csv`
+- `results/<version>/group_error_summary.csv`
+- `results/<version>/subgroup_auc_summary.csv`
+- `results/<version>/threshold_metrics.csv`
+- `results/<version>/epoch_history.csv`
 
-This uses:
+其中 `epoch_history.csv` 用于复盘每个 epoch 的 loss、AUC、PR-AUC、threshold、FN、FP 等指标，避免只看最后一个 epoch。
 
-- feature CSV: `model_train/data/circor/hms_features_final_single_v1.csv`
-- feature set: `base_timing_grade_shape_position_persistent_no_embedding`
-- model preset: `single_final_v1`
-- binary threshold: `0.54`
+## 当前判断
 
-Outputs:
+根据既有实验，单纯阈值调整无法把 FP 从 60 多降到十几，同时保持 FN 很低。后续更合理的方向是先做患者级可分性诊断：
 
-- `model_train/results/outcome_hms_final_single_persistent_no_embedding_v1_results.csv`
-- `model_train/results/outcome_hms_final_single_persistent_no_embedding_v1_summary.csv`
+- 片段分数聚合特征。
+- 四位置风险分布。
+- 高风险片段数量和位置数量。
+- `Murmur=Absent` 子集单独分析。
 
-## Generate the final binary outcome output
-
-Run:
-
-```powershell
-python run_outcome_final_inference.py
-```
-
-This writes:
-
-- detailed output: `model_train/results/pseudo_test_predictions_hms_position.csv`
-- binary-only output: `model_train/results/pseudo_test_predictions_binary.csv`
-
-The binary-only CSV is the one to hand off when you only want:
-
-- `Patient ID`
-- `abnormal_prob`
-- `binary_pred`
-- `true_label`
-
-## End-to-end reproduction
-
-To run the whole chain in one command:
-
-```powershell
-python reproduce_full_outcome.py
-```
-
-This will run:
-
-1. `check_repro_ready.py`
-2. `train_hms_final.py`
-3. `generate_hms_features_final.py`
-4. `train_outcome_hms_final.py`
-5. `run_outcome_final_inference.py`
-
-Default behavior:
-
-- seed: `0`
-- device: `cuda`
-- epochs: `40`
-- patience: `10`
-- batch size: `32`
-- output checkpoint: `model_train/checkpoints/final_hms_single_v1.pth`
-- output metadata: `model_train/checkpoints/final_hms_single_v1.json`
-
-If GPU is unavailable:
-
-```powershell
-python train_hms_final.py --device cpu
-```
-
-## Regenerate the final HMS feature table
-
-After training finishes:
-
-```powershell
-python generate_hms_features_final.py
-```
-
-Outputs:
-
-- checkpoint: `model_train/checkpoints/final_hms_single_v1.pth`
-- decision metadata: `model_train/checkpoints/final_hms_single_v1.json`
-- features: `model_train/data/circor/hms_features_final_single_v1.csv`
-- outcome train summary: `model_train/results/outcome_hms_final_single_persistent_no_embedding_v1_summary.csv`
-- outcome binary output: `model_train/results/pseudo_test_predictions_binary.csv`
-
-## Override paths if needed
-
-The package defaults point to the local `model_train/data/...` and `model_train/checkpoints/...` layout.
-
-If someone keeps the dataset elsewhere, they can override paths explicitly:
-
-```powershell
-python .\src\train_hms.py --csv-path D:\circor\training_data.csv --wav-dir D:\circor\training_data --checkpoint-path .\checkpoints\final_hms_single_v1.pth
-```
-
-```powershell
-python .\src\generate_hms_features.py --csv-path D:\circor\training_data.csv --wav-dir D:\circor\training_data --checkpoint-path .\checkpoints\final_hms_single_v1.pth --output-path .\data\circor\hms_features_final_single_v1.csv
-```
+如果这些患者级特征仍不能区分 Absent-Abnormal 与 Absent-Normal，则说明当前数据和弱监督标签本身不足以支撑 FN、FP 都低于 10 的目标。
