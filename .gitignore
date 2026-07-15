@@ -1,0 +1,15 @@
+.venv/
+.env
+__pycache__/
+*.pyc
+*.pyo
+*.pth
+checkpoints/
+results/
+*.zip
+*.tar.gz
+*.log
+.DS_Store
+*.egg-info/
+dist/
+build/
