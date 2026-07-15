@@ -1,0 +1,56 @@
+{
+  "checkpoint_path": "checkpoints/audio_primary_v3.pth",
+  "output_dir": "results/audio_primary_v3_supplement",
+  "patient_count": 189,
+  "segment_count": 5335,
+  "outcome_counts": {
+    "Abnormal": 91,
+    "Normal": 98
+  },
+  "murmur_counts": {
+    "Absent": 145,
+    "Unknown": 12,
+    "Present": 32
+  },
+  "roc_auc": 0.7228078044404576,
+  "pr_auc": 0.7303160828070783,
+  "target_recall_threshold": {
+    "threshold": 0.3499999999999999,
+    "accuracy": 0.5714285714285714,
+    "abnormal_precision": 0.5328947368421053,
+    "abnormal_recall": 0.8901098901098901,
+    "abnormal_f1": 0.6666666666666666,
+    "specificity": 0.2755102040816326,
+    "npv": 0.7297297297297297,
+    "tp": 81,
+    "tn": 27,
+    "fp": 71,
+    "fn": 10
+  },
+  "report_threshold": 0.3499999999999999,
+  "checkpoint_best_metric": {
+    "threshold": 0.3499999999999999,
+    "accuracy": 0.5714285714285714,
+    "abnormal_precision": 0.5328947368421053,
+    "abnormal_recall": 0.8901098901098901,
+    "abnormal_f1": 0.6666666666666666,
+    "specificity": 0.2755102040816326,
+    "npv": 0.7297297297297297,
+    "tp": 81,
+    "tn": 27,
+    "fp": 71,
+    "fn": 10,
+    "roc_auc": 0.7228078044404576,
+    "pr_auc": 0.7303160828070783
+  },
+  "checkpoint_best_epoch": null,
+  "segment_score_source": "single_segment_patient_forward",
+  "files": {
+    "patient_level": "results/audio_primary_v3_supplement/patient_level_diagnostics.csv",
+    "segment_level": "results/audio_primary_v3_supplement/segment_level_diagnostics.csv",
+    "position_segment_summary": "results/audio_primary_v3_supplement/position_segment_summary.csv",
+    "subgroup_auc_summary": "results/audio_primary_v3_supplement/subgroup_auc_summary.csv",
+    "murmur_absent_threshold_tradeoff": "results/audio_primary_v3_supplement/murmur_absent_threshold_tradeoff.csv",
+    "murmur_absent_constraint_summary": "results/audio_primary_v3_supplement/murmur_absent_constraint_summary.csv"
+  }
+}
