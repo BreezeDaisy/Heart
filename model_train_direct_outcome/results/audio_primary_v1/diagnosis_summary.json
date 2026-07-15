@@ -1,0 +1,62 @@
+{
+  "target_recall": 0.88,
+  "selected_threshold": 0.22999999999999998,
+  "selected_metrics": {
+    "threshold": 0.22999999999999998,
+    "accuracy": 0.5925925925925926,
+    "abnormal_precision": 0.5448717948717948,
+    "abnormal_recall": 0.9340659340659341,
+    "abnormal_f1": 0.6882591093117408,
+    "specificity": 0.2755102040816326,
+    "npv": 0.8181818181818182,
+    "tp": 85,
+    "tn": 27,
+    "fp": 71,
+    "fn": 6
+  },
+  "roc_auc": 0.7121551917470285,
+  "pr_auc": 0.7262062902731661,
+  "brier_score": 0.22121590375900269,
+  "selected_error_counts": {
+    "TP": 85,
+    "FP": 71,
+    "TN": 27,
+    "FN": 6
+  },
+  "outcome_counts": {
+    "Normal": 98,
+    "Abnormal": 91
+  },
+  "murmur_counts": {
+    "Absent": 145,
+    "Present": 32,
+    "Unknown": 12
+  },
+  "paths": {
+    "patient_predictions": "results/audio_primary_v1/patient_predictions.csv",
+    "threshold_metrics": "results/audio_primary_v1/threshold_metrics.csv",
+    "group_error_summary": "results/audio_primary_v1/group_error_summary.csv",
+    "probability_summary": "results/audio_primary_v1/probability_summary.csv",
+    "calibration_table": "results/audio_primary_v1/calibration_table.csv",
+    "subgroup_auc_summary": "results/audio_primary_v1/subgroup_auc_summary.csv"
+  },
+  "model_type": "audio_primary_v1",
+  "checkpoint_path": "checkpoints/audio_primary_v1.pth",
+  "best_metric": {
+    "threshold": 0.22999999999999998,
+    "accuracy": 0.5925925925925926,
+    "abnormal_precision": 0.5448717948717948,
+    "abnormal_recall": 0.9340659340659341,
+    "abnormal_f1": 0.6882591093117408,
+    "specificity": 0.2755102040816326,
+    "npv": 0.8181818181818182,
+    "tp": 85,
+    "tn": 27,
+    "fp": 71,
+    "fn": 6,
+    "roc_auc": 0.7121551917470285,
+    "pr_auc": 0.7262062902731661
+  },
+  "selection_note": "Checkpoint selected by ROC-AUC, then PR-AUC, then specificity and accuracy. Threshold is used only for reporting.",
+  "feature_note": "Audio-first model using log-mel segments, auscultation position embedding, handcrafted acoustic descriptors, and weak clinical values age/sex/height/weight. It excludes Murmur, pregnancy status, position_count, has_all_positions, per-position presence flags, and clinical missingness flags."
+}

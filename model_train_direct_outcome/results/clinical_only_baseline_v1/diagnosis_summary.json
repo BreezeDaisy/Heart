@@ -1,0 +1,47 @@
+{
+  "target_recall": 0.88,
+  "selected_threshold": 0.4499999999999999,
+  "selected_metrics": {
+    "threshold": 0.4499999999999999,
+    "accuracy": 0.544973544973545,
+    "abnormal_precision": 0.5159235668789809,
+    "abnormal_recall": 0.8901098901098901,
+    "abnormal_f1": 0.6532258064516129,
+    "specificity": 0.22448979591836735,
+    "npv": 0.6875,
+    "tp": 81,
+    "tn": 22,
+    "fp": 76,
+    "fn": 10
+  },
+  "roc_auc": 0.6101704418030949,
+  "pr_auc": 0.6292453279571344,
+  "brier_score": 0.2380547970533371,
+  "selected_error_counts": {
+    "TP": 81,
+    "FP": 76,
+    "TN": 22,
+    "FN": 10
+  },
+  "outcome_counts": {
+    "Normal": 98,
+    "Abnormal": 91
+  },
+  "murmur_counts": {
+    "Absent": 145,
+    "Present": 32,
+    "Unknown": 12
+  },
+  "paths": {
+    "patient_predictions": "results/clinical_only_baseline_v1/patient_predictions.csv",
+    "threshold_metrics": "results/clinical_only_baseline_v1/threshold_metrics.csv",
+    "group_error_summary": "results/clinical_only_baseline_v1/group_error_summary.csv",
+    "probability_summary": "results/clinical_only_baseline_v1/probability_summary.csv",
+    "calibration_table": "results/clinical_only_baseline_v1/calibration_table.csv",
+    "subgroup_auc_summary": "results/clinical_only_baseline_v1/subgroup_auc_summary.csv"
+  },
+  "model_type": "clinical_only_baseline",
+  "checkpoint_path": "checkpoints/clinical_only_baseline_v1.pth",
+  "feature_dim": 16,
+  "feature_note": "Clinical values, clinical missing flags, position_count, has_all_positions, and per-position presence flags."
+}

@@ -5,10 +5,8 @@ __pycache__/
 *.pyo
 *.pth
 checkpoints/
-results/
 *.zip
 *.tar.gz
-*.log
 .DS_Store
 *.egg-info/
 dist/

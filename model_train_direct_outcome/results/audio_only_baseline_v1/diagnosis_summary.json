@@ -1,0 +1,46 @@
+{
+  "target_recall": 0.88,
+  "selected_threshold": 0.36999999999999994,
+  "selected_metrics": {
+    "threshold": 0.36999999999999994,
+    "accuracy": 0.5343915343915344,
+    "abnormal_precision": 0.5094339622641509,
+    "abnormal_recall": 0.8901098901098901,
+    "abnormal_f1": 0.648,
+    "specificity": 0.20408163265306123,
+    "npv": 0.6666666666666666,
+    "tp": 81,
+    "tn": 20,
+    "fp": 78,
+    "fn": 10
+  },
+  "roc_auc": 0.5467593630858937,
+  "pr_auc": 0.5919581775834306,
+  "brier_score": 0.24327537417411804,
+  "selected_error_counts": {
+    "TP": 81,
+    "FP": 78,
+    "TN": 20,
+    "FN": 10
+  },
+  "outcome_counts": {
+    "Normal": 98,
+    "Abnormal": 91
+  },
+  "murmur_counts": {
+    "Absent": 145,
+    "Present": 32,
+    "Unknown": 12
+  },
+  "paths": {
+    "patient_predictions": "results/audio_only_baseline_v1/patient_predictions.csv",
+    "threshold_metrics": "results/audio_only_baseline_v1/threshold_metrics.csv",
+    "group_error_summary": "results/audio_only_baseline_v1/group_error_summary.csv",
+    "probability_summary": "results/audio_only_baseline_v1/probability_summary.csv",
+    "calibration_table": "results/audio_only_baseline_v1/calibration_table.csv",
+    "subgroup_auc_summary": "results/audio_only_baseline_v1/subgroup_auc_summary.csv"
+  },
+  "model_type": "audio_only_baseline",
+  "checkpoint_path": "checkpoints/audio_only_baseline_v1.pth",
+  "feature_note": "Audio log-mel inputs and segment position embedding only; no clinical branch or explicit missingness flags."
+}
