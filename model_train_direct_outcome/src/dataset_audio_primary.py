@@ -260,7 +260,7 @@ class CirCorAudioPrimaryDataset(Dataset):
         segment_records = self._apply_position_dropout(segment_records)
         segment_records = self._select_segments(segment_records)
         x_scale1, x_scale2, x_scale3 = [], [], []
-        acoustic, position_indices = [], []
+        acoustic, position_indices, segment_start_sec = [], [], []
         for record in segment_records:
             y = record["audio"]
             start = record["start"]
@@ -271,6 +271,7 @@ class CirCorAudioPrimaryDataset(Dataset):
             x_scale3.append(torch.tensor(self._wav_to_logmel(mel_segment, 128, 32, self.n_mels)).unsqueeze(0))
             acoustic.append(torch.tensor(self._acoustic_features(peak_norm), dtype=torch.float32))
             position_indices.append(POSITION_TO_INDEX[record["position"]])
+            segment_start_sec.append(float(start / self.sr))
 
         if not x_scale1:
             raise RuntimeError(f"No usable segments for patient {patient['patient_id']}")
@@ -285,6 +286,7 @@ class CirCorAudioPrimaryDataset(Dataset):
             "x_scale3": torch.stack(x_scale3, dim=0).float(),
             "acoustic": torch.stack(acoustic, dim=0).float(),
             "position_index": torch.tensor(position_indices, dtype=torch.long),
+            "segment_start_sec": torch.tensor(segment_start_sec, dtype=torch.float32),
             "segment_mask": torch.ones(len(position_indices), dtype=torch.float32),
             "weak_clinical": torch.tensor(patient["weak_clinical"], dtype=torch.float32),
             "y_outcome": torch.tensor(patient["y_outcome"], dtype=torch.long),
@@ -306,15 +308,18 @@ def audio_primary_collate(batch):
             tensors.append(value)
         return torch.stack(tensors, dim=0)
 
-    positions, masks = [], []
+    positions, starts, masks = [], [], []
     for item in batch:
         position = item["position_index"]
+        start = item["segment_start_sec"]
         mask = item["segment_mask"]
         if position.size(0) < max_segments:
             pad_len = max_segments - position.size(0)
             position = torch.cat([position, position.new_zeros(pad_len)], dim=0)
+            start = torch.cat([start, start.new_zeros(pad_len)], dim=0)
             mask = torch.cat([mask, mask.new_zeros(pad_len)], dim=0)
         positions.append(position)
+        starts.append(start)
         masks.append(mask)
 
     return {
@@ -327,6 +332,7 @@ def audio_primary_collate(batch):
         "x_scale3": pad_segments("x_scale3"),
         "acoustic": pad_segments("acoustic"),
         "position_index": torch.stack(positions, dim=0),
+        "segment_start_sec": torch.stack(starts, dim=0),
         "segment_mask": torch.stack(masks, dim=0),
         "weak_clinical": torch.stack([item["weak_clinical"] for item in batch], dim=0),
         "y_outcome": torch.stack([item["y_outcome"] for item in batch], dim=0),
